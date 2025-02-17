@@ -4,91 +4,100 @@
   <meta charset="UTF-8">
   <title>NYC Basketball Courts Finder</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <!-- Updated CSP meta tag with specific domains for map tiles -->
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://unpkg.com; style-src 'self' 'unsafe-inline' https://unpkg.com; img-src 'self' data: https://a.tile.openstreetmap.org https://a.basemaps.cartocdn.com;">
-  <link 
-    rel="stylesheet" 
-    href="https://unpkg.com/leaflet@1.9.3/dist/leaflet.css"
-    crossorigin=""/>
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://unpkg.com https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://unpkg.com; img-src 'self' data: https://a.tile.openstreetmap.org https://a.basemaps.cartocdn.com;">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.3/dist/leaflet.css" crossorigin=""/>
+  <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
   <style>
-    body {
-      margin: 0;
-      font-family: Arial, sans-serif;
-    }
-    header {
-      background: #333;
-      color: #fff;
-      padding: 20px;
-      text-align: center;
-    }
-    #search {
-      padding: 10px;
-      text-align: center;
-    }
-    #search input {
-      padding: 8px;
-      width: 300px;
-      font-size: 16px;
-    }
-    #map {
-      height: 80vh;
-      width: 100%;
-      background: #ddd;
-    }
-    #courtsList {
-      padding: 10px;
-    }
-    .court-item {
-      border-bottom: 1px solid #ccc;
-      padding: 10px 0;
-    }
+    body { margin: 0; font-family: Arial, sans-serif; }
+    header { background: #333; color: #fff; padding: 20px; text-align: center; }
+    #boroughFilters { text-align: center; margin: 10px 0; }
+    #boroughFilters button { margin: 0 5px; padding: 8px 12px; font-size: 14px; cursor: pointer; }
+    #search { text-align: center; padding: 10px; }
+    #search input { padding: 8px; width: 300px; font-size: 16px; }
+    #map { height: 80vh; width: 100%; background: #ddd; }
+    #courtsList { padding: 10px; }
+    .court-item { border-bottom: 1px solid #ccc; padding: 10px 0; }
   </style>
 </head>
 <body>
   <header>
     <h1>NYC Basketball Courts Finder</h1>
   </header>
+  <div id="boroughFilters">
+    <button data-borough="All">All Boroughs</button>
+    <button data-borough="Bronx">Bronx</button>
+    <button data-borough="Brooklyn">Brooklyn</button>
+    <button data-borough="Manhattan">Manhattan</button>
+    <button data-borough="Queens">Queens</button>
+    <button data-borough="Staten Island">Staten Island</button>
+  </div>
   <div id="search">
     <input type="text" id="filterInput" placeholder="Search for a court by name or location...">
   </div>
   <div id="map"></div>
   <div id="courtsList"></div>
 
-  <script 
-    src="https://unpkg.com/leaflet@1.9.3/dist/leaflet.js"
-    crossorigin="">
-  </script>
+  <script src="https://unpkg.com/leaflet@1.9.3/dist/leaflet.js" crossorigin=""></script>
   <script>
     document.addEventListener('DOMContentLoaded', function() {
-      // Initialize the map centered on NYC.
+      // Create and center the map on NYC.
       var map = L.map('map').setView([40.7128, -74.0060], 12);
       
-      // Use a fixed tile URL to avoid CSP issues.
+      // Add OSM tiles (with a fallback).
       var tileLayer = L.tileLayer('https://a.tile.openstreetmap.org/{z}/{x}/{y}.png', {
         attribution: '&copy; OpenStreetMap contributors'
       });
-      
       tileLayer.on('tileerror', function(e) {
         console.error('Tile error:', e);
-        console.log('Switching to fallback tile layer.');
         L.tileLayer('https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
           attribution: '&copy; OpenStreetMap &copy; CARTO'
         }).addTo(map);
       });
-      
       tileLayer.addTo(map);
       
-      // Define a custom basketball icon using basketball.png.
+      // Custom (smaller) basketball icon.
       var basketballIcon = L.icon({
-        iconUrl: 'basketball.png', // Ensure this file is in the same directory
-        iconSize: [32, 32],       // Adjust size as needed
-        iconAnchor: [16, 32]      // Anchor so the bottom center is at the coordinate
+        iconUrl: 'basketball.png',
+        iconSize: [24, 24],
+        iconAnchor: [12, 24]
       });
       
       var courtsData = [];
       var markers = [];
+      var selectedBorough = "All";
+      var boroughBoundaries; // Will hold the GeoJSON boundaries
       
-      // Display the list of courts.
+      // Load borough boundaries GeoJSON.
+      fetch('nyc_borough_boundaries.geojson')
+        .then(function(response) {
+          if (!response.ok) throw new Error('Borough boundaries not loaded.');
+          return response.json();
+        })
+        .then(function(data) {
+          boroughBoundaries = data;
+          console.log("Borough boundaries loaded.");
+        })
+        .catch(function(error) {
+          console.error('Error loading borough boundaries:', error);
+        });
+      
+      // Use Turf.js to determine the borough of a court.
+      function getBorough(court) {
+        var lat = parseFloat(court.lat);
+        var lon = parseFloat(court.lon);
+        if (isNaN(lat) || isNaN(lon) || !boroughBoundaries) return "Unknown";
+        var pt = turf.point([lon, lat]);
+        for (var i = 0; i < boroughBoundaries.features.length; i++) {
+          var feature = boroughBoundaries.features[i];
+          if (turf.booleanPointInPolygon(pt, feature)) {
+            // Use the "name" property from the geojson.
+            return feature.properties.name || "Unknown";
+          }
+        }
+        return "Unknown";
+      }
+      
+      // Render the list of courts.
       function displayCourts(data) {
         var listDiv = document.getElementById('courtsList');
         listDiv.innerHTML = '';
@@ -100,7 +109,7 @@
         });
       }
       
-      // Add markers using the custom basketball icon and bind a popup.
+      // Add markers to the map.
       function addMarkers(data) {
         data.forEach(function(court) {
           if (court.lat && court.lon) {
@@ -116,20 +125,18 @@
         });
       }
       
-      // Filter the displayed courts.
+      // Filter courts by search term and borough based on official boundaries.
       function filterCourts() {
         var filterValue = document.getElementById('filterInput').value.toLowerCase();
-        console.log("Filter value:", filterValue);
         var filteredData = courtsData.filter(function(court) {
-          // Use empty string as fallback if Name or Location is null.
-          return ( (court.Name || "").toLowerCase().includes(filterValue) ||
-                   (court.Location || "").toLowerCase().includes(filterValue) );
+          var name = (court.Name || "").toLowerCase();
+          var location = (court.Location || "").toLowerCase();
+          var matchesSearch = name.includes(filterValue) || location.includes(filterValue);
+          var courtBorough = getBorough(court);
+          var matchesBorough = (selectedBorough === "All" || courtBorough.toLowerCase() === selectedBorough.toLowerCase());
+          return matchesSearch && matchesBorough;
         });
-        console.log("Filtered courts count:", filteredData.length);
-        // Remove existing markers.
-        markers.forEach(function(marker) {
-          map.removeLayer(marker);
-        });
+        markers.forEach(function(marker) { map.removeLayer(marker); });
         markers = [];
         displayCourts(filteredData);
         addMarkers(filteredData);
@@ -137,25 +144,31 @@
       
       document.getElementById('filterInput').addEventListener('input', filterCourts);
       
-      // Load the JSON file containing courts data.
+      // Set up borough filter buttons.
+      var boroughButtons = document.querySelectorAll('#boroughFilters button');
+      boroughButtons.forEach(function(button) {
+        button.addEventListener('click', function() {
+          selectedBorough = button.getAttribute('data-borough');
+          boroughButtons.forEach(function(btn) { btn.style.backgroundColor = ''; });
+          button.style.backgroundColor = '#ccc';
+          filterCourts();
+        });
+      });
+      
+      // Load court data.
       fetch('DPR_Basketball_001.json')
         .then(function(response) {
-          if (!response.ok) {
-            throw new Error('Network response was not ok: ' + response.statusText);
-          }
+          if (!response.ok) throw new Error('Network response was not ok: ' + response.statusText);
           return response.json();
         })
         .then(function(data) {
-          console.log('Loaded JSON data:', data);
           courtsData = data;
           displayCourts(data);
           addMarkers(data);
-          setTimeout(function() {
-            map.invalidateSize();
-          }, 200);
+          setTimeout(function() { map.invalidateSize(); }, 200);
         })
         .catch(function(error) {
-          console.error('Error loading JSON:', error);
+          console.error('Error loading court data:', error);
         });
     });
   </script>
